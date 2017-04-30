@@ -136,6 +136,7 @@ StatusOr<se::DeviceMemoryBase> HloTestBase::Execute(
     std::set<void*> added_opaques;
     for (auto element_buffer : element_buffers) {
       if (added_opaques.count(element_buffer.opaque()) == 0) {
+        CHECK(element_buffer.opaque() != nullptr);
         added_opaques.insert(element_buffer.opaque());
         allocations_.push_back(element_buffer);
       }

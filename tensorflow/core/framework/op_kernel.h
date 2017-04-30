@@ -151,6 +151,10 @@ class OpKernel {
     return shape.dims() == 1 || (allow_legacy_scalars() && shape.dims() == 0);
   }
 
+  // Turn a shape Tensor into a TensorShape
+  // TODO(irving): Move to TensorShapeUtils once !allow_legacy_scalars
+  Status MakeShape(const Tensor& shape, TensorShape* out) const;
+
  private:
   const NodeDef def_;
   const DataTypeVector input_types_;
@@ -207,7 +211,7 @@ class PersistentTensor {
 
   int64 NumElements() const { return tensor_.NumElements(); }
 
-  int64 TotalBytes() const { return tensor_.TotalBytes(); }
+  int64 AllocatedBytes() const { return tensor_.AllocatedBytes(); }
 
  private:
   Tensor tensor_;
@@ -715,6 +719,21 @@ class OpKernelContext {
       StringPiece output_name, const TensorShape& output_shape,
       Tensor** output) TF_MUST_USE_RESULT;
 
+  // Tries to reuse one of of the inputs given in input_indices as a temporary.
+  // If none of the given inputs can be forwarded, calls
+  // allocate_temp() to allocate a new temporary buffer.
+  Status forward_input_or_allocate_temp(
+      gtl::ArraySlice<int> candidate_input_indices, DataType type,
+      const TensorShape& shape, const AllocatorAttributes& allocator_attr,
+      Tensor* out_temp) TF_MUST_USE_RESULT;
+
+  Status forward_input_or_allocate_temp(
+      gtl::ArraySlice<int> candidate_input_indices, DataType type,
+      const TensorShape& shape, Tensor* out_temp) TF_MUST_USE_RESULT {
+    return forward_input_or_allocate_temp(candidate_input_indices, type, shape,
+                                          AllocatorAttributes(), out_temp);
+  }
+
   // Output
 
   // Returns the named list-valued output in "list", as defined in the OpDef.
@@ -1041,9 +1060,9 @@ class OpKernelContext {
   std::vector<int64> host_persistent_alloc_ids() const;
   std::vector<int64> device_persistent_alloc_ids() const;
 
- private:
   bool input_is_ref(int index) const;
 
+ private:
   Allocator* get_allocator(AllocatorAttributes attr);
 
   // Internal method to add a tensor's buffer to the list of buffers
@@ -1175,6 +1194,17 @@ class Name : public KernelDefBuilder {
       : KernelDefBuilder(SHOULD_REGISTER_OP(op) ? op : "_no_register") {}
 };
 
+namespace system {
+
+class Name : public KernelDefBuilder {
+ public:
+  // For system kernels, we ignore selective registration and
+  // unconditionally register the kernel.
+  explicit Name(const char* op) : KernelDefBuilder(op) {}
+};
+
+}  // namespace system
+
 }  // namespace register_kernel
 
 #define REGISTER_KERNEL_BUILDER(kernel_builder, ...) \
@@ -1195,6 +1225,26 @@ class Name : public KernelDefBuilder {
           [](::tensorflow::OpKernelConstruction* context)             \
               -> ::tensorflow::OpKernel* {                            \
             return new __VA_ARGS__(context);                          \
+          });
+
+// The `REGISTER_SYSTEM_KERNEL_BUILDER()` macro acts as
+// `REGISTER_KERNEL_BUILDER()` except that the kernel is registered
+// unconditionally even when selective registration is used.
+#define REGISTER_SYSTEM_KERNEL_BUILDER(kernel_builder, ...)               \
+  REGISTER_SYSTEM_KERNEL_BUILDER_UNIQ_HELPER(__COUNTER__, kernel_builder, \
+                                             __VA_ARGS__)
+
+#define REGISTER_SYSTEM_KERNEL_BUILDER_UNIQ_HELPER(ctr, kernel_builder, ...) \
+  REGISTER_SYSTEM_KERNEL_BUILDER_UNIQ(ctr, kernel_builder, __VA_ARGS__)
+
+#define REGISTER_SYSTEM_KERNEL_BUILDER_UNIQ(ctr, kernel_builder, ...)    \
+  static ::tensorflow::kernel_factory::OpKernelRegistrar                 \
+      registrar__body__##ctr##__object(                                  \
+          ::tensorflow::register_kernel::system::kernel_builder.Build(), \
+          #__VA_ARGS__,                                                  \
+          [](::tensorflow::OpKernelConstruction* context)                \
+              -> ::tensorflow::OpKernel* {                               \
+            return new __VA_ARGS__(context);                             \
           });
 
 void* GlobalKernelRegistry();
@@ -1269,7 +1319,8 @@ inline MemoryType OpKernelContext::output_memory_type(int index) const {
 }
 
 inline bool OpKernelContext::input_is_ref(int index) const {
-  return IsRefType(input_dtype(index));
+  const TensorValue& value((*params_->inputs)[index]);
+  return value.is_ref();
 }
 
 inline void OpKernelContext::record_tensor_reference(const Tensor& tensor) {

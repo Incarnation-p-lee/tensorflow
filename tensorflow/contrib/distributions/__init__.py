@@ -29,6 +29,8 @@ See the @{$python/contrib.distributions} guide.
 @@Categorical
 @@Chi2
 @@Chi2WithAbsDf
+@@Deterministic
+@@VectorDeterministic
 @@Exponential
 @@ExponentialWithSoftplusRate
 @@Gamma
@@ -78,6 +80,9 @@ See the @{$python/contrib.distributions} guide.
 @@normal_conjugates_known_scale_predictive
 @@softplus_inverse
 
+## Functions for statistics of samples
+@@percentile
+
 """
 from __future__ import absolute_import
 from __future__ import division
@@ -85,15 +90,15 @@ from __future__ import print_function
 
 # pylint: disable=unused-import,wildcard-import,line-too-long,g-importing-member
 
-
+from tensorflow.contrib.distributions.python.ops import bijectors
 from tensorflow.contrib.distributions.python.ops.bernoulli import *
 from tensorflow.contrib.distributions.python.ops.beta import *
-from tensorflow.contrib.distributions.python.ops.bijectors import *
 from tensorflow.contrib.distributions.python.ops.binomial import *
 from tensorflow.contrib.distributions.python.ops.categorical import *
 from tensorflow.contrib.distributions.python.ops.chi2 import *
 from tensorflow.contrib.distributions.python.ops.conditional_distribution import *
 from tensorflow.contrib.distributions.python.ops.conditional_transformed_distribution import *
+from tensorflow.contrib.distributions.python.ops.deterministic import *
 from tensorflow.contrib.distributions.python.ops.dirichlet import *
 from tensorflow.contrib.distributions.python.ops.dirichlet_multinomial import *
 from tensorflow.contrib.distributions.python.ops.distribution import *
@@ -119,6 +124,7 @@ from tensorflow.contrib.distributions.python.ops.poisson import *
 from tensorflow.contrib.distributions.python.ops.quantized_distribution import *
 from tensorflow.contrib.distributions.python.ops.relaxed_bernoulli import *
 from tensorflow.contrib.distributions.python.ops.relaxed_onehot_categorical import *
+from tensorflow.contrib.distributions.python.ops.sample_stats import *
 from tensorflow.contrib.distributions.python.ops.student_t import *
 from tensorflow.contrib.distributions.python.ops.transformed_distribution import *
 from tensorflow.contrib.distributions.python.ops.uniform import *
@@ -128,8 +134,12 @@ from tensorflow.contrib.distributions.python.ops.wishart import *
 
 from tensorflow.python.util.all_util import remove_undocumented
 
-_allowed_symbols = ['ConditionalDistribution',
-                    'ConditionalTransformedDistribution',
-                    'FULLY_REPARAMETERIZED', 'NOT_REPARAMETERIZED']
+_allowed_symbols = [
+    'bijectors',
+    'ConditionalDistribution',
+    'ConditionalTransformedDistribution',
+    'FULLY_REPARAMETERIZED',
+    'NOT_REPARAMETERIZED',
+]
 
 remove_undocumented(__name__, _allowed_symbols)

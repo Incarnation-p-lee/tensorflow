@@ -23,7 +23,6 @@ from __future__ import print_function
 
 import collections
 import hashlib
-import inspect
 import re
 
 from tensorflow.core.framework import attr_value_pb2
@@ -36,6 +35,8 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import variable_scope as vs
 from tensorflow.python.util import compat
+from tensorflow.python.util import tf_decorator
+from tensorflow.python.util import tf_inspect
 
 
 def _make_argname_from_tensor_name(name):
@@ -68,12 +69,7 @@ def _get_node_def(op):
 
 
 def _get_op_def(op):
-  # pylint: disable=protected-access
-  if hasattr(op, "_sig"):
-    return getattr(op, "_sig")
-  else:
-    return op_def_registry.get_registered_ops()[op.type]
-  # pylint: enable=protected-access
+  return op.op_def or op_def_registry.get_registered_ops()[op.type]
 
 
 def _is_in_placeholders(op, func_arg_placeholders):
@@ -193,8 +189,11 @@ def _parse_kwargs_as_attrs(func_name, **kwargs):
     attrs["_noinline"] = attr_value_pb2.AttrValue(b=bool(noinline))
 
   compiled = kwargs.pop("compiled", None)
+  separate_compiled_gradients = kwargs.pop("separate_compiled_gradients", None)
   if compiled is not None:
     attrs["_XlaCompile"] = attr_value_pb2.AttrValue(b=bool(compiled))
+    attrs["_XlaSeparateCompiledGradients"] = attr_value_pb2.AttrValue(
+        b=bool(separate_compiled_gradients))
     attrs["_XlaScope"] = attr_value_pb2.AttrValue(
         s=("function_%s" % func_name).encode())
 
@@ -248,8 +247,8 @@ def _call(sig, *inputs, **kwargs):
         output_types,
         name=name,
         attrs=attrs,
+        op_def=sig,
         compute_shapes=False)
-  setattr(op, "_sig", sig)  # Remember the signature.
   if op.outputs:
     if len(op.outputs) == 1:
       ret = op.outputs[0]
@@ -261,10 +260,11 @@ def _call(sig, *inputs, **kwargs):
 
 
 def _get_func_name(func):
+  _, func = tf_decorator.unwrap(func)
   if callable(func):
-    if inspect.isfunction(func):
+    if tf_inspect.isfunction(func):
       return func.__name__
-    elif inspect.ismethod(func):
+    elif tf_inspect.ismethod(func):
       return "%s.%s" % (func.__self__.__name__, func.__name__)
     else:  # Probably a class instance with __call__
       return type(func)
@@ -301,6 +301,7 @@ class _FuncGraph(ops.Graph):
              shape=None,
              dtype=None,
              initializer=None,
+             reuse=None,
              trainable=True,
              collections=None,  # pylint: disable=redefined-outer-name
              use_resource=None,
@@ -321,6 +322,7 @@ class _FuncGraph(ops.Graph):
           shape=shape,
           dtype=dtype,
           initializer=initializer,
+          reuse=reuse,
           trainable=trainable,
           collections=collections,
           use_resource=use_resource)
@@ -344,6 +346,10 @@ class _FuncGraph(ops.Graph):
           # Substitute with a placeholder.
           self.extra_inputs.append(x)
           ph = array_ops.placeholder(x.dtype, shape=x.get_shape())
+          # pylint: disable=protected-access
+          ph._handle_shape = x._handle_shape
+          ph._handle_dtype = x._handle_dtype
+          # pylint: enable=protected-access
           inputs[i] = ph
           self._captured[x] = ph
           self.extra_args.append(ph)
@@ -452,6 +458,7 @@ class _DefinedFunction(object):
     self._shape_func = shape_func
     self._extra_kwargs = kwargs
     self._definition = None  # Constructed lazily.
+    self._sub_functions = dict()  # Constructed with definition.
 
     self._args = []
     assert isinstance(input_types, (list, tuple))
@@ -883,6 +890,11 @@ class Defun(object):
   default graph. Because the addition of the function into the graph
   is deferred, the decorator can be used anywhere in the program.
 
+  Any variables created inside of the function are hoisted into the outer graph.
+  Note that the variables are created in the variable scope that was active
+  during the first call to the function. Subsequent function calls will refer to
+  the same set of variables.
+
   Definitions of functions are frozen in a graph as soon as the graph is used to
   create a session. Therefore, nodes using the function must be created in the
   graph before the corresponding session is created.
@@ -945,7 +957,7 @@ class Defun(object):
       raise ValueError("func %s must be callable" % func)
 
     # Func should not use kwargs and defaults.
-    argspec = inspect.getargspec(func)
+    argspec = tf_inspect.getargspec(func)
     if argspec.keywords or argspec.defaults:
       raise ValueError("Functions with argument defaults or keyword "
                        "arguments are not supported.")
@@ -956,7 +968,7 @@ class Defun(object):
     if argspec.varargs:
       max_args = 1000000
     argnames = argspec.args
-    if inspect.ismethod(func):
+    if tf_inspect.ismethod(func):
       # 1st argument is the "class" type.
       min_args -= 1
       argnames = argnames[1:]
@@ -995,7 +1007,7 @@ class Declare(object):
 
   For example,
     # Declares  a function Foo, which takes a tf.int32 named "n" and a
-    # tf.float32 named "n" as inputs and returns a tf.float32 named "z"
+    # tf.float32 named "x" as inputs and returns a tf.float32 named "z"
     # as its output.
     foo = Declare("Foo", [("n", tf.int32), ("x", tf.float32)],
                   [("z", tf.float32)])

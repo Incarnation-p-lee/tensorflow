@@ -42,6 +42,8 @@
 *   [Optimization (contrib)](contrib.opt.md)
 *   [Random variable transformations (contrib)](contrib.distributions.bijector.md)
 *   [RNN and Cells (contrib)](contrib.rnn.md)
+*   [Seq2seq Library (contrib)](contrib.seq2seq.md)
+*   [Staging (contrib)](contrib.staging.md)
 *   [Statistical Distributions (contrib)](contrib.distributions.md)
 *   [Training (contrib)](contrib.training.md)
 *   [Utilities (contrib)](contrib.util.md)

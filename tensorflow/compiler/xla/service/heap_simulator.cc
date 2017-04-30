@@ -19,12 +19,15 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/compiler/xla/map_util.h"
+#include "tensorflow/compiler/xla/service/liveness_util.h"
 #include "tensorflow/compiler/xla/util.h"
 
 namespace xla {
 
 using tensorflow::gtl::FlatMap;
 using tensorflow::gtl::FlatSet;
+
+namespace {
 
 // Returns the set of buffers that may be sources of all operands of the given
 // instruction.  The returned buffers are guaranteed to have no duplicates, and
@@ -46,6 +49,8 @@ std::vector<const LogicalBuffer*> UniqueOperandSourceBuffers(
   return sorted;
 }
 
+}  // namespace
+
 /*static*/
 StatusOr<HeapSimulator::Result> HeapSimulator::Run(
     std::unique_ptr<HeapAlgorithm> algorithm,
@@ -65,19 +70,24 @@ StatusOr<HeapSimulator::Result> HeapSimulator::Run(
   HeapSimulator heap(std::move(algorithm), size_fn, buffers_to_assign);
   FlatMap<const LogicalBuffer*, FlatSet<const HloInstruction*>> live_buffers;
 
+  const HloInstruction* root = computation.root_instruction();
+  FlatSet<const LogicalBuffer*> output_source_buffers =
+      points_to_analysis.GetPointsToSet(root).CreateFlattenedSet();
+
   for (const HloInstruction* instruction : instruction_sequence) {
     const std::vector<const LogicalBuffer*>& buffers_defined_by_instruction =
         points_to_analysis.GetBuffersDefinedByInstruction(instruction);
-
-    const HloInstruction* root = computation.root_instruction();
-    FlatSet<const LogicalBuffer*> output_source_buffers =
-        points_to_analysis.GetPointsToSet(root).CreateFlattenedSet();
 
     // Initialize live_buffers for each buffer that we're going to assign.  The
     // set of instructions that need to be visited contains all users of all
     // aliases.  The alias itself is not necessary; if it has users, the users
     // are necessarily scheduled after the alias.  And if it has no users, it is
     // either a dead value or an output, both of which are handled below.
+    //
+    // We ignore control dependencies here. The reasoning is that the control
+    // dependencies have already been accounted for in the ordering of the given
+    // 'instruction_sequence', and should not otherwise artificially extend the
+    // lifetime of buffers that aren't already connected by a data dependency.
     std::vector<const LogicalBuffer*> dead_buffers_to_free;
     for (const LogicalBuffer* buffer : buffers_defined_by_instruction) {
       if (heap.IgnoreBuffer(buffer)) {
@@ -85,7 +95,8 @@ StatusOr<HeapSimulator::Result> HeapSimulator::Run(
       }
       for (const BufferAlias& alias :
            points_to_analysis.GetBufferAliases(*buffer)) {
-        const std::set<HloInstruction*>& users = alias.instruction()->users();
+        const std::vector<HloInstruction*>& users =
+            alias.instruction()->users();
         if (!users.empty()) {
           live_buffers[buffer].insert(users.begin(), users.end());
         }
@@ -144,13 +155,10 @@ StatusOr<HeapSimulator::Result> HeapSimulator::Run(
       // we must be the last user of the buffer.
       bool shared = false;
       for (const LogicalBuffer* operand_buffer : operand_buffers_to_free) {
-        // The operand buffer can be shared if we have the same shape, and we're
-        // an elementwise instruction.
-        //
-        // TODO(b/35903632): Refactor and use the CanShareOperandBufferWithUser
-        // logic from buffer_liveness.cc
-        if (ShapeUtil::Equal(buffer->shape(), operand_buffer->shape()) &&
-            instruction->IsElementwise()) {
+        if (buffer->instruction()->IsUserOf(operand_buffer->instruction()) &&
+            CanShareOperandBufferWithUser(
+                operand_buffer->instruction(), operand_buffer->index(),
+                buffer->instruction(), buffer->index(), points_to_analysis)) {
           heap.ShareBuffer(buffer, operand_buffer);
           shared = true;
           break;
